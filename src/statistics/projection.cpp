@@ -93,9 +93,9 @@ void ProjectionScan(
          procSizes[ ii ] = 1;
       }
    }
-   // NOTE: even if all `process` are 0 now, we still want to do the processing below. Many projection types incur some change to the
-   // data that we need. For example, the `MaximumAbs` projection would be awkward if `Abs` wasn't applied, or the `SumSquare` projection
-   // would be awkward if `Square` wasn't applied.
+   // NOTE: even if all `process` are false now (no projection to apply at all), we still want to do the processing below.
+   // Many projection types incur some change to the data that we need. For example, the `MaximumAbs` projection would
+   // apply `Abs` to each pixel, or the `SumSquare` projection would apply `Square`.
 
    // Adjust output if necessary (and possible)
    DIP_START_STACK_TRACE
@@ -138,31 +138,34 @@ void ProjectionScan(
       return;
    }
 
-   // Can we treat the images as if they were 1D?
-   // TODO: This is an opportunity for improving performance if the non-processing dimensions in in, mask and out have the same layout and simple stride
-
-   // TODO: Determine the number of threads we'll be using. The size of the data has an influence. As is the number of sub-images that we can generate
-   function.SetNumberOfThreads( 1 );
-
-   // TODO: Start threads, each thread makes its own temp image.
-   dip::uint thread = 0;
-
    // Create view over input image, that spans the processing dimensions
    Image tempIn;
    tempIn.CopyProperties( input );
    tempIn.SetSizes( procSizes );
    tempIn.SetOriginUnsafe( input.Origin() );
-   tempIn.Squeeze(); // we want to make sure that function.Project() won't be looping over singleton dimensions
-   // TODO: instead of Squeeze, do a FlattenAsMuchAsPossible. But Mask must be flattened in the same way.
    // Create view over mask image, identically to input
    Image tempMask;
    if( hasMask ) {
       tempMask.CopyProperties( mask );
       tempMask.SetSizes( procSizes );
-      tempMask.SetOriginUnsafe( mask.Origin());
-      tempMask.Squeeze(); // keep in sync with tempIn.
+      tempMask.SetOriginUnsafe( mask.Origin() );
    }
+   // Make sure that function.Project() loops over as few dimensions as possible
+   if( hasMask ) {
+      if( tempIn.Strides() == tempMask.Strides() ) {
+         tempIn.FlattenAsMuchAsPossible();
+         tempMask.FlattenAsMuchAsPossible(); // will do same transformation as we did for tempIn
+      } else {
+         tempIn.Squeeze();// we can't be as aggressive here, but at least prevent looping over singleton dimensions
+         tempMask.Squeeze();
+      }
+   } else {
+      tempIn.FlattenAsMuchAsPossible();
+   }
+
    // Create view over output image that doesn't contain the processing dimensions or other singleton dimensions
+   // TODO: This is an opportunity for improving performance if the non-processing dimensions in in, mask and out
+   //       have the same layout and simple stride: turn tempOut into a 1D image.
    Image tempOut;
    tempOut.CopyProperties( output );
    // Squeeze tempOut, but keep inStride, maskStride, outStride and outSizes in sync
@@ -188,15 +191,22 @@ void ProjectionScan(
    outSizes.resize( jj );
    nDims = jj;
    tempOut.SetSizes( outSizes );
-   tempOut.SetOriginUnsafe( output.Origin());
+   tempOut.SetOriginUnsafe( output.Origin() );
+
+   // TODO: Determine the number of threads we'll be using. The size of the data has an influence, as is the number
+   //       of sub-images that we can generate
+   function.SetNumberOfThreads( 1 );
+
+   // TODO: Start threads, each thread makes its own temp image.
+   dip::uint thread = 0;
+
    // Create a temporary output buffer, to collect a single sample in the data type requested by the calling function
-   bool useOutputBuffer = false;
+   bool useOutputBuffer = output.DataType() != outImageType;
    Image outBuffer;
-   if( output.DataType() != outImageType ) {
+   if( useOutputBuffer ) {
       // We need a temporary space for the output sample also, because `function.Project` expects `outImageType`.
       outBuffer.SetDataType( outImageType );
       outBuffer.Forge(); // By default it's a single sample.
-      useOutputBuffer = true;
    }
 
    // Iterate over the pixels in the output image. For each, we create a view in the input image.
@@ -1432,7 +1442,7 @@ DOCTEST_TEST_CASE("[DIPlib] testing the projection function mechanics") {
    img.At( 1, 0, 0 ) = { 4, 2, 1 };
    dip::Image mask{ img.Sizes(), 1, dip::DT_BIN };
    mask = 1;
-   img.At( 0, 0, 0 ) = 0;
+   mask.At( 0, 0, 0 ) = 0;
    out = dip::Maximum( img, mask, { true, true, false } );
    DOCTEST_CHECK( out.At( 0, 0, 0 ) == dip::Image::Pixel( { 4, 2, 2 } )); // not {4,3,4}
    DOCTEST_CHECK( out.At( 0, 0, 1 ) == dip::Image::Pixel( { 4, 2, 3 } ));
@@ -1440,6 +1450,38 @@ DOCTEST_TEST_CASE("[DIPlib] testing the projection function mechanics") {
    // Using a view
    out = dip::Maximum( img.At( mask ));
    DOCTEST_CHECK( out.At( 0, 0, 0 ) == dip::Image::Pixel( { 4, 2, 3 } )); // not {4,3,4}
+
+   // Over an image with weird strides, and a similar mask
+   img = dip::Image{ dip::UnsignedArray{ 5, 4 }, 1, dip::DT_UINT8 };
+   img = 1;
+   img.At( 0, 0 ) = 2;
+   img.At( 0, 2 ) = 3;
+   img.At( 3, 0 ) = 4;
+   img.At( 3, 2 ) = 5;
+   mask = dip::Image{ img.Sizes(), 1, dip::DT_BIN };
+   mask = 1;
+   mask.At( 3, 2 ) = 0;
+   img.Rotation90();
+   mask.Rotation90();
+   out = dip::Maximum( img, mask, { true, false } );
+   DOCTEST_REQUIRE( out.Sizes() == dip::UnsignedArray{ 1, 5 } );
+   DOCTEST_CHECK( out.At( 0, 0 ) == 3 );
+   DOCTEST_CHECK( out.At( 0, 1 ) == 1 );
+   DOCTEST_CHECK( out.At( 0, 2 ) == 1 );
+   DOCTEST_CHECK( out.At( 0, 3 ) == 4 ); // 5 is masked out
+   DOCTEST_CHECK( out.At( 0, 4 ) == 1 );
+
+   // Over an image with weird strides, and a mask with normal strides
+   mask = dip::Image{ img.Sizes(), 1, dip::DT_BIN };
+   mask = 1;
+   mask.At( 1, 3 ) = 0;
+   out = dip::Maximum( img, mask, { true, false } );
+   DOCTEST_REQUIRE( out.Sizes() == dip::UnsignedArray{ 1, 5 } );
+   DOCTEST_CHECK( out.At( 0, 0 ) == 3 );
+   DOCTEST_CHECK( out.At( 0, 1 ) == 1 );
+   DOCTEST_CHECK( out.At( 0, 2 ) == 1 );
+   DOCTEST_CHECK( out.At( 0, 3 ) == 4 ); // 5 is masked out
+   DOCTEST_CHECK( out.At( 0, 4 ) == 1 );
 }
 
 DOCTEST_TEST_CASE("[DIPlib] testing the projection function computations") {
