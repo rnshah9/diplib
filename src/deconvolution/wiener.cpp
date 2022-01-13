@@ -17,10 +17,12 @@
  */
 
 #include "diplib.h"
-#include "diplib/microscopy.h"
-#include "diplib/math.h"
-#include "diplib/statistics.h"
+#include "diplib/deconvolution.h"
+//#include "diplib/math.h"
+//#include "diplib/statistics.h"
 #include "diplib/transform.h"
+
+#include "get_otf.h"
 
 namespace dip {
 
@@ -28,7 +30,7 @@ namespace {
 
 bool ParseWienerOptions( StringSet const& options ) {
    bool isOtf = false;
-   for( auto& opt : options ) {
+   for( auto const& opt : options ) {
       if( opt == "OTF" ) {
          isOtf = true;
       } else {
@@ -38,20 +40,7 @@ bool ParseWienerOptions( StringSet const& options ) {
    return isOtf;
 }
 
-Image GetOTF( Image const& psf, UnsignedArray const& sizes, bool isOtf ) {
-   Image H;
-   if( isOtf ) {
-      H = psf.QuickCopy();
-      DIP_THROW_IF( H.DataType().IsBinary(), E::DATA_TYPE_NOT_SUPPORTED );
-   } else {
-      DIP_THROW_IF( !psf.DataType().IsReal(), E::DATA_TYPE_NOT_SUPPORTED );
-      DIP_STACK_TRACE_THIS( H = psf.Pad( sizes ));
-      FourierTransform( H, H );
-   }
-   return H;
-}
-
-}
+} // namespace
 
 void WienerDeconvolution(
       Image const& in,
