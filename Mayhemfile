@@ -1,0 +1,9 @@
+project: diplib
+target: radial-mean
+testsuite:
+  - file://examples/cermet.ics
+cmds:
+  - cmd: /repo/build/examples/radial_mean
+    filepath: /repo/examples/cermet.ics
+    env:
+      DISABLE_SMOKETEST: '1'
